@@ -1,0 +1,115 @@
+version: "3"
+services:
+  #  有时需要在容器内执行 docker 命令，比如：在 jenkins 容器内运行 docker 命令执行构建镜像
+  #  直接在 docker 容器内嵌套安装 docker 未免太过臃肿
+  #  更好的办法是：容器内仅部署 docker 命令行工具（作为客户端），实际执行交由宿主机内的 docker-engine（服务器）
+  docker-in-docker:
+    image: 'docker:dind'
+    container_name: docker-in-docker
+    restart: unless-stopped
+    privileged: true
+    networks:
+      sonarnet:
+        aliases:
+          - docker
+    environment:
+      - DOCKER_TLS_CERTDIR=/certs
+    volumes:
+      - jenkins-docker-certs:/certs/client
+      - jenkins-data:/var/jenkins_home
+    ports:
+      - 2376:2376
+
+  # jenkins
+  jenkins:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    container_name: jenkins
+    networks:
+      - sonarnet
+    depends_on:
+      - nginx
+    environment:
+      - DOCKER_HOST=tcp://docker:2376
+      - DOCKER_CERT_PATH=/certs/client
+      - DOCKER_TLS_VERIFY=1
+      - JENKINS_OPTS="--prefix=/jenkins"
+    volumes:
+      - jenkins-data:/var/jenkins_home
+      - jenkins-docker-certs:/certs/client:ro
+  #  sonarqube
+  sonarqube:
+    image: sonarqube:8.5.0-community
+    container_name: sonarqube
+    command: -Dsonar.ce.javaOpts=-Xmx2048m
+    restart: unless-stopped
+    networks:
+      - sonarnet
+    depends_on:
+      - nginx
+    environment:
+      - SONARQUBE_JDBC_USERNAME=sonar
+      - SONARQUBE_JDBC_PASSWORD=sonar
+      - SONARQUBE_JDBC_URL=jdbc:postgresql://db:5432/sonarqube
+      - SONAR_WEB_CONTEXT=/sonar
+    volumes:
+      - sonarqube_conf:/opt/sonarqube/conf
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_logs:/opt/sonarqube/logs
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_bundled-plugins:/opt/sonarqube/lib/bundled-plugins
+  # postgres数据库
+  db:
+    image: postgres:latest
+    restart: unless-stopped
+    container_name: postgres
+    networks:
+      - sonarnet
+    environment:
+      - POSTGRES_USER=sonar
+      - POSTGRES_PASSWORD=sonar
+      - POSTGRES_DB=sonarqube
+    volumes:
+      - sonarqube_db:/var/lib/postgresql
+      - postgresql_data:/var/lib/postgresql/data
+
+  #  nginx 负责反向代理
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx-custom.dockerfile
+    container_name: nginx-reverse-proxy
+    restart: unless-stopped
+    networks:
+      - sonarnet
+    volumes:
+      - nginx_data:/etc/nginx/
+      - letsencrypt_data:/etc/letsencrypt/
+    ports:
+      - 80:80
+      - 443:443
+      - 9871:9871
+      - 9872:9872
+# 存储卷
+volumes:
+  postgresql_data:
+  sonarqube_bundled-plugins:
+  sonarqube_conf:
+  sonarqube_data:
+  sonarqube_db:
+  sonarqube_logs:
+  sonarqube_extensions:
+    driver: local-persist
+      driver_opts:
+        mountpoint: /usr/local/jt/jenkins-sonarqube-docker/plugin
+  jenkins-docker-certs:
+  jenkins-data:
+  nginx_data:
+  letsencrypt_data:
+
+# 网络
+networks:
+  sonarnet:
+    driver: bridge
