@@ -1,0 +1,111 @@
+version: "3"
+services:
+  #  有时需要在容器内执行 docker 命令，比如：在 jenkins 容器内运行 docker 命令执行构建镜像
+  #  直接在 docker 容器内嵌套安装 docker 未免太过臃肿
+  #  更好的办法是：容器内仅部署 docker 命令行工具（作为客户端），实际执行交由宿主机内的 docker-engine（服务器）
+  docker-in-docker:
+    image: 'docker:dind'
+    container_name: docker-in-docker
+    restart: unless-stopped
+    privileged: true
+    networks:
+      sonarnet:
+        aliases:
+          - docker
+    environment:
+      - TZ=Asia/Shanghai
+      - DOCKER_TLS_CERTDIR=/certs
+    volumes:
+      - /home/data/jenkins/jenkins_home:/certs/client
+      - /home/data/jenkins/certs/client:/var/jenkins_home
+    ports:
+      - 2376:2376
+
+  # jenkins
+  jenkins:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    container_name: jenkins
+    networks:
+      - sonarnet
+    depends_on:
+      - nginx
+    environment:
+      - TZ=Asia/Shanghai
+      - DOCKER_HOST=tcp://docker:2376
+      - DOCKER_CERT_PATH=/certs/client
+      - DOCKER_TLS_VERIFY=1
+      - JENKINS_OPTS="--prefix=/jenkins"
+    volumes:
+      - /home/data/jenkins/jenkins_home:/var/jenkins_home
+      - /home/data/jenkins/certs/client:/certs/client:ro
+
+  #  sonarqube
+  sonarqube:
+    image: sonarqube:latest
+    container_name: sonarqube
+    command: -Dsonar.ce.javaOpts=-Xmx2048m
+    restart: unless-stopped
+    networks:
+      - sonarnet
+    depends_on:
+      - nginx
+    environment:
+      - TZ=Asia/Shanghai
+      - SONARQUBE_JDBC_USERNAME=sonar
+      - SONARQUBE_JDBC_PASSWORD=sonar
+      - SONARQUBE_JDBC_URL=jdbc:postgresql://db:5432/sonarqube
+      - SONAR_WEB_CONTEXT=/sonar
+    volumes:
+      - /home/data/sonarqube/conf:/opt/sonarqube/conf
+      - /home/data/sonarqube/data:/opt/sonarqube/data
+      - /home/data/sonarqube/logs:/opt/sonarqube/logs
+      - /home/data/sonarqube/extensions/:/opt/sonarqube/extensions
+      - /home/data/sonarqube/lib/bundled-plugins:/opt/sonarqube/lib/bundled-plugins
+
+  # postgres数据库
+  db:
+    image: postgres:latest
+    restart: unless-stopped
+    container_name: postgres
+    networks:
+      - sonarnet
+    environment:
+      - TZ=Asia/Shanghai
+      - POSTGRES_USER=sonar
+      - POSTGRES_PASSWORD=sonar
+      - POSTGRES_DB=sonarqube
+    volumes:
+      - /home/data/postgresql:/var/lib/postgresql
+      - /home/data/postgresql/data:/var/lib/postgresql/data
+
+  #  nginx 负责反向代理
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx-custom.dockerfile
+    container_name: nginx-reverse-proxy
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    networks:
+      - sonarnet
+    volumes:
+      - nginx_data:/etc/nginx/
+      - letsencrypt_data:/etc/letsencrypt/
+    ports:
+      - 80:80
+      - 443:443
+      - 9871:9871
+      - 9872:9872
+# 存储卷
+volumes:
+  nginx_data:
+  letsencrypt_data:
+
+# 网络
+networks:
+  sonarnet:
+    driver: bridge
